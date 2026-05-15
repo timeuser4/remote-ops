@@ -1,0 +1,4 @@
+interface:
+  display_name: "Remote Ops"
+  short_description: "Run remote host operations through plink or sshpass"
+  default_prompt: "Use $remote-ops to connect to my remote host and run non-interactive commands."

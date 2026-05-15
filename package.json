@@ -1,0 +1,26 @@
+{
+  "name": "remote-ops-skill",
+  "version": "0.1.0",
+  "description": "Cross-platform remote host operations skill for Claude Code & Codex CLI — plink on Windows, sshpass on macOS/Linux",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "skill",
+    "remote-ops",
+    "plink",
+    "sshpass",
+    "ssh",
+    "putty"
+  ],
+  "files": [
+    "SKILL.md",
+    "scripts/",
+    "references/",
+    "agents/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/timeuser4/remote-ops.git"
+  }
+}
