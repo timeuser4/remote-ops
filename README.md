@@ -13,23 +13,64 @@ One-shot remote inspection, deployment, log collection, and service management w
 
 ## Install / 安装
 
-```bash
-# 克隆仓库
-git clone https://github.com/timeuser4/remote-ops.git
-mkdir -p ~/.codex/skills
-ln -s "$(pwd)/remote-ops" ~/.codex/skills/remote-ops
+### Claude Code
 
-# 一次性安装脚本（自动安装 plink 或 sshpass）
-python3 ~/.codex/skills/remote-ops/scripts/setup.py
+**Clone 安装：**
+
+```bash
+git clone https://github.com/timeuser4/remote-ops.git
+mkdir -p ~/.claude/skills/remote-ops
+cp -r remote-ops/SKILL.md remote-ops/scripts/ remote-ops/references/ remote-ops/agents/ ~/.claude/skills/remote-ops/
+python3 ~/.claude/skills/remote-ops/scripts/setup.py
 ```
 
-通过 npm 安装：
+**npm 安装（TODO）：**
 
 ```bash
 npm install -g remote-ops-skill
-mkdir -p ~/.codex/skills
-ln -s "$(npm root -g)/remote-ops-skill" ~/.codex/skills/remote-ops
+mkdir -p ~/.claude/skills/remote-ops
+cp -r "$(npm root -g)/remote-ops-skill/"* ~/.claude/skills/remote-ops/
+python3 ~/.claude/skills/remote-ops/scripts/setup.py
+```
+
+### Codex CLI
+
+**Clone 安装：**
+
+```bash
+git clone https://github.com/timeuser4/remote-ops.git
+mkdir -p ~/.codex/skills/remote-ops
+cp -r remote-ops/SKILL.md remote-ops/scripts/ remote-ops/references/ remote-ops/agents/ ~/.codex/skills/remote-ops/
 python3 ~/.codex/skills/remote-ops/scripts/setup.py
+```
+
+**npm 安装（TODO）：**
+
+```bash
+npm install -g remote-ops-skill
+mkdir -p ~/.codex/skills/remote-ops
+cp -r "$(npm root -g)/remote-ops-skill/"* ~/.codex/skills/remote-ops/
+python3 ~/.codex/skills/remote-ops/scripts/setup.py
+```
+
+### OpenCode
+
+**Clone 安装：**
+
+```bash
+git clone https://github.com/timeuser4/remote-ops.git
+mkdir -p ~/.opencode/skills/remote-ops
+cp -r remote-ops/SKILL.md remote-ops/scripts/ remote-ops/references/ remote-ops/agents/ ~/.opencode/skills/remote-ops/
+python3 ~/.opencode/skills/remote-ops/scripts/setup.py
+```
+
+**npm 安装（TODO）：**
+
+```bash
+npm install -g remote-ops-skill
+mkdir -p ~/.opencode/skills/remote-ops
+cp -r "$(npm root -g)/remote-ops-skill/"* ~/.opencode/skills/remote-ops/
+python3 ~/.opencode/skills/remote-ops/scripts/setup.py
 ```
 
 ## Usage / 用法
