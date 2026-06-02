@@ -1,201 +1,337 @@
 ---
 name: remote-ops
-description: Use this skill whenever the user needs to run commands on a remote Linux host via SSH, inspect remote servers, deploy files, sync code, read/write remote files, or manage server connection profiles. Trigger for any remote execution task — one-shot commands, log inspection, service management, file transfer, or structured remote I/O. Supports plink (Windows) and sshpass/ssh (macOS/Linux) with automatic shell-safe transport (--base64), a deployable remote agent (--agent) for structured operations, checksum-based file sync (--sync), and persistent server profiles (--server/--save).
+version: 0.2
+description: Cross-platform remote host operations skill for Claude Code & Codex CLI. Uses rtmux (SSH + tmux) as the core engine — replaces sshpass and plink. All commands execute inside persistent tmux sessions on the remote host, preserving terminal history, working directory, and environment context across disconnects. Supports command execution, file copy with resume, base64 safe transport, structured JSON output with connection context, jump host (bastion) support, and session binding.
 ---
 
 # Remote Ops
 
 ## Overview
 
-Use this skill when work must be performed on a remote host from the local machine. It is optimized for one-shot remote commands and repeatable remote workflows, not long-lived interactive terminal sessions.
+Use this skill when work must be performed on a remote host from the local machine. Powered by **rtmux** (SSH + tmux), all commands execute inside persistent tmux sessions, preserving terminal history, working directory, and environment variables across SSH disconnects.
 
-- **Windows**: uses `plink.exe` (PuTTY Link)
-- **macOS / Linux**: uses `sshpass` + `ssh`
+- **Core engine**: rtmux (paramiko SSH + remote tmux)
+- **Replaces**: sshpass, plink, raw ssh commands
+- **Session persistence**: tmux sessions survive disconnects
+- **Cross-platform client**: macOS, Linux, Windows (paramiko-based SSH)
+
+- **All commands execute inside tmux sessions** — no command escapes session management
+- **Session context persists** — terminal history, cwd, env vars survive disconnects
+- **Base64 safe transport** — `--base64` avoids all shell escaping issues
+- **Structured JSON output** — `--json` includes host/session context for easy identification
+- **Cross-platform** — macOS and Linux clients (paramiko-based SSH)
 
 ## When To Use
 
 Trigger this skill for any task that involves executing commands on a remote host via SSH:
 
 - The user asks to run a command on a remote server, inspect logs, check service status, or deploy files.
-- The user mentions an SSH target (hostname, IP, saved session) and wants to do something there.
-- The user needs structured remote operations: read/write files, list directories, sync local code to remote.
-- The user wants to save a server connection profile for later reuse.
-- Cross-platform: Windows (plink), macOS, or Linux (sshpass/ssh) clients are all supported.
+- The user mentions an SSH target (hostname, IP, saved connection) and wants to do something there.
+- The user needs file operations: copy files to/from remote, list, delete on remote hosts.
+- The user needs persistent terminal sessions that survive SSH disconnects.
+- The user wants to resume work on a remote host from a previous session.
+- The user needs to execute complex commands with pipes, quotes, heredocs, or multi-line scripts.
 
 ## Preconditions
 
-- Run `python scripts/setup.py` once per machine to install the required tools.
-- Windows: installs the correct PuTTY .msi for the detected architecture (x64/arm64/x86).
-- macOS: installs sshpass via Homebrew.
-- Linux: installs sshpass via the detected package manager (apt/dnf/yum/pacman/zypper).
-- Prefer key-based auth over inline passwords.
-- If password auth is unavoidable, set a temporary environment variable such as `SSHPASS` or `PLINK_PASSWORD` and use `--password-env`.
+- Install rtmux locally: run `python3 setup_rtmux.py` (creates venv, installs paramiko + rtmux).
+- Remote host must have bash available (tmux is auto-installed if missing).
+- SSH key-based auth is preferred. See **Connection Setup** below for initialization flow.
 - Ask for missing target details when they cannot be inferred safely:
-  - saved session name, or host and username
+  - host alias (from `rtmux connections`)
   - port if not `22`
-  - remote shell type, default `bash`
-  - key path or other auth method
-  - optional host key fingerprint for first-time connections (plink backend)
+
+## Connection Setup
+
+When the user asks to connect to a remote host, follow this flow:
+
+### 1. Check existing connection
+
+```bash
+rtmux --json connections
+```
+
+If a matching connection exists (same user@host), the SSH key was created during setup — **use it directly**, skip to the Workflow section.
+
+If no matching connection → proceed to step 2.
+
+### 2. No connection found — initialize
+
+SSH key does not exist yet. Check if the user provided enough info:
+
+**Full info provided (user + host + password)** → automate:
+
+```bash
+rtmux connect user@host --port <port> --password '<password>'
+```
+
+**Partial info (no password)** → give the user the command:
+
+```
+请在终端执行以下命令完成连接初始化：
+
+rtmux connect user@host --port <port>
+
+完成后告诉我，或者直接告诉我密码，我来完成。
+```
+
+If the user later provides the password instead of saying "done", accept it and run the connect command.
+
+### 3. Connection ready
+
+After initialization, verify with a smoke test:
+
+```bash
+rtmux --json exec agent-test "hostname && uname -a" --host <alias> --auto-create
+```
+
+Then proceed with the actual task.
+
+## Session Naming Convention
+
+The agent generates a meaningful session name for each task. This is the agent's responsibility — rtmux does not auto-generate names.
+
+**Format**: `agent-{task-slug}` or `agent-{task-slug}-{qualifier}`
+
+**Examples**:
+- `agent-debug-nginx`
+- `agent-deploy-frontend`
+- `agent-check-disk`
+- `agent-setup-python-env`
+
+**Rules**:
+- Use only alphanumeric characters, hyphens, and underscores
+- Keep it under 64 characters
+- Generate the name at task start, reuse it for all calls within the task
+- Use `--auto-create` on the first `exec` call to create the session automatically
+- Use a different session name per independent task
+- One conversation can have multiple sessions for different tasks
+
+**Session Binding Rules**:
+1. At conversation start, pick ONE session name for the entire task
+2. Reuse it for ALL rtmux commands in this conversation
+3. If user specifies a session name, use that instead
+4. If user says "use existing session", run `rtmux --json list` first to find it
+5. At conversation end, leave session alive — user may want to resume later
 
 ## Workflow
 
-1. Confirm the target and auth mode.
-2. Prefer `scripts/invoke_remote.py` over hand-built commands — it handles quoting, saved sessions, key auth, host key pinning, and non-interactive mode for both backends.
-3. Smoke-test the connection with a narrow command such as `hostname && uname -a && pwd`.
-4. Run read-only inspection as small, explicit remote commands.
-5. File size strategy for edits:
-   - Large files: use `--agent read` to pull content locally, edit, then `--agent write` or `--sync` to push back.
-   - Small files: direct remote edits are acceptable.
-   - Default heuristic: treat files over ~200 lines or ~8 KB as large unless the user specifies otherwise.
-6. For any multi-line script, complex quoting, heredoc, JSON/YAML, or remote file edits, use `--base64` (automatic safe transport) or `--agent` (structured I/O with auto-deployment).
-7. For remote writes, create backups first, write idempotently, and verify the resulting file contents with a second read-only command.
-8. Report the exact remote command intent, the output, and any state changes.
+1. **Connection check**: Follow **Connection Setup** above if the target host has no saved connection.
+2. **Discover connections**: `rtmux --json connections` to find available host aliases.
+3. **Choose session name**: Pick a meaningful name for the task.
+3. **Smoke test**: `rtmux --json exec {session} "hostname && uname -a" --host {alias} --auto-create`
+4. **Execute commands**: Use `rtmux --json exec {session} "{command}" --host {alias}` for all operations.
+5. **Complex commands**: Use `--base64` for commands with pipes, quotes, `$`, heredocs, multi-line scripts.
+6. **File operations**: Use `rtmux cp` (upload/download), `ls`, `rm` as needed.
+7. **Cleanup**: When the task is complete:
+   ```bash
+   rtmux --json kill {session} --host {alias}
+   ```
+8. **Or preserve**: Leave the session alive. Find it later via `rtmux --json list --host {alias}`.
 
-## Remote Development Rules
+## Command Reference
 
-- Treat your local shell, Python argparse, the remote transport, the remote shell, and the remote program as separate quoting layers.
-- Use `--base64` for any command containing special characters (pipes, quotes, dollar signs, heredocs, JSON/YAML). The flag auto-encodes the command and eliminates all quoting issues.
-- Use `--agent` for structured remote work (file read/write, directory listing, complex exec). The agent is auto-deployed to `/tmp/remote-ops-agent.py` on first use; subsequent calls detect it and skip deployment.
-- When a target file is large, prefer `--agent` with read/write methods for local round-trip editing, or use scp/download -> local edit -> upload.
-- Do not pass here-strings, heredocs, multi-line Python, embedded YAML, or nested quotes directly to `--command` without `--base64`.
-- For command output inspection, prefer simple commands: `sed`, `cat`, `find`, and narrow `grep`. Use `--agent` for structured reads.
-- For long-running services, do not start an interactive process unless the user explicitly asked for it. Use `nohup`, `systemd`, `tmux`, or write a start command to a log file.
-- After remote file edits, verify with `sed`, `grep`, or checksums.
-- If a local shell command fails before contacting the remote host, state that no remote change occurred.
-- For remote desktop pop-up requests (GUI apps on the remote Linux desktop), launch commands with the desktop session environment. Typical defaults for Jetson / single-user Linux desktop, adjust UID and paths as needed for the target system:
-  - `DISPLAY=:1`
-  - `XAUTHORITY=/run/user/1000/gdm/Xauthority`
-  - `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus`
-  - Add `LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu` when viewer tools depend on system OpenGL/USB libs.
-  - Example pattern: `DISPLAY=:1 XAUTHORITY=/run/user/1000/gdm/Xauthority DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus <gui_command>`
+### Global Options
+
+- `--json` — JSON output with connection context (host, hostname, username, session)
+- Position: **before** the subcommand: `rtmux --json exec ...`
+
+### Connection Discovery
+
+```bash
+rtmux --json connections
+# {"status":"ok","connections":[{"alias":"...","hostname":"...","username":"...","port":22}]}
+```
+
+### Command Execution
+
+```bash
+# Basic exec
+rtmux --json exec my-session "df -h" --host server1
+
+# Auto-create session if not exists
+rtmux --json exec my-session "hostname" --host server1 --auto-create
+
+# Custom timeout (default 30s)
+rtmux --json exec my-session "slow-task" --host server1 --timeout 120
+
+# Base64 safe transport (for complex commands)
+rtmux --json exec my-session 'echo "hello $USER" | grep hello' --host server1 --base64
+```
+
+JSON output:
+```json
+{"host":"server1","hostname":"10.0.0.1","username":"admin","session":"my-session","status":"success","output":"hello admin","exit_code":0}
+```
+
+### Base64 Mode
+
+Use `--base64` for any command containing special characters. The command is base64-encoded locally, decoded and executed on the remote host. No shell escaping issues.
+
+```bash
+# Pipes, quotes, $variables
+rtmux --json exec s1 'echo "hello $USER" | grep hello' --host server1 --base64
+
+# Multi-line / loops
+rtmux --json exec s1 'for i in 1 2 3; do echo "item $i"; done' --host server1 --base64
+
+# Heredoc / YAML / JSON content
+rtmux --json exec s1 'cat > /tmp/c.yaml << "EOF"
+key: "value with spaces"
+list: [1, 2, 3]
+EOF' --host server1 --base64
+
+# Command substitution
+rtmux --json exec s1 'echo "uptime: $(uptime -p)"' --host server1 --base64
+```
+
+### Session Management
+
+```bash
+# List sessions
+rtmux --json list --host server1
+# {"host":"server1","hostname":"...","username":"...","status":"ok","sessions":[{"name":"...","windows":1,"created":"..."}]}
+
+# Kill session
+rtmux --json kill my-session --host server1
+
+# Capture terminal history
+rtmux --json capture my-session --host server1
+rtmux --json capture my-session --host server1 --lines 100
+
+# Create session explicitly (usually use --auto-create instead)
+rtmux --json new my-session --host server1
+```
+
+### File Copy (cp)
+
+类似 scp，用 `::` 前缀标识远程路径（双冒号避免 Windows 盘符冲突）：
+
+```bash
+# 上传文件
+rtmux --json cp ./local/file.txt ::/remote/path --host server1
+
+# 上传目录（递归）
+rtmux --json cp ./local/dir ::/remote/path -r --host server1
+
+# 下载文件
+rtmux --json cp ::/remote/file.txt ./local/path --host server1
+
+# 下载目录（递归）
+rtmux --json cp ::/remote/dir ./local/path -r --host server1
+
+# 断点续传（大文件中断后重跑）
+rtmux --json cp ./big-file.tar.gz ::/remote/path --host server1 --resume
+```
+
+### Other File Operations
+
+```bash
+# List
+rtmux --json ls /remote/path --host server1
+
+# Delete (JSON mode skips confirmation)
+rtmux --json rm /remote/path --host server1
+
+# Proxy download (URL downloaded directly on remote)
+rtmux --json proxy-dl https://example.com/file /remote/path --host server1
+```
+
+### Connection Management
+
+```bash
+# Set up connection (interactive password)
+rtmux connect user@hostname --port 6000
+
+# Set up connection (password from env var)
+SSHPASS="xxx" rtmux connect user@hostname --password-env SSHPASS
+
+# Set up connection via jump host (bastion)
+rtmux connect user@target --via bastion-alias
+
+# Set up connection via multiple jump hosts (chain)
+rtmux connect user@target --via bastion1,bastion2
+
+# Remove connection
+rtmux disconnect <alias>
+rtmux disconnect <alias> --remove-key
+```
+
+### Jump Host (跳板机)
+
+When the target host is only accessible through a bastion/jump host, use `--via` to specify the jump host chain.
+
+**Setup flow**:
+1. First, set up the jump host: `rtmux connect user@bastion`
+2. Then, set up the target via the jump host: `rtmux connect user@target --via bastion`
+
+**Multi-layer jump** (target → bastion2 → bastion1 → local):
+```bash
+rtmux connect user@bastion1
+rtmux connect user@bastion2 --via bastion1
+rtmux connect user@target --via bastion1,bastion2
+```
+
+**Note**: Jump hosts only need SSH key setup (no tmux). Tmux is only installed on the target host.
+
+Once configured, all commands work transparently with jump hosts:
+```bash
+rtmux --json exec my-session "hostname" --host target-alias --auto-create
+rtmux --json cp ./file.txt ::/remote/path --host target-alias
+```
+
+## JSON Output Format
+
+All `--json` outputs include connection context when `--host` is specified:
+
+```json
+{
+  "host": "alias-from-connections",
+  "hostname": "10.0.0.1",
+  "username": "admin",
+  "session": "my-session",
+  "status": "success|ok|created|killed|error",
+  ...
+}
+```
+
+**Error format**:
+```json
+{"status": "error", "error": "message", "code": 1}
+```
+
+**Error codes**: 1=generic, 2=config, 3=connection, 4=auth, 5=tmux, 6=keygen
+
+**Exit codes**: `rtmux exec` propagates the remote command's exit code.
 
 ## Guardrails
 
-- Do not start a bare interactive session such as `plink user@host` or `ssh user@host` from the shell tool. It can hang waiting for input.
-- Default to non-interactive behavior (`-batch` for plink).
-- Host key policy: sshpass backend uses `accept-new` (trust on first use). plink backend accepts the key only when pinned via `--hostkey` or a saved session. For strict verification, pre-populate `~/.ssh/known_hosts` before connecting.
-- For remote privilege escalation, prefer `sudo -n` so failures are explicit. If the remote host requires an interactive sudo password, stop and ask the user.
-- Keep remote writes scoped and explicit. Confirm destructive actions and target paths before running them.
-- Start with read-only inspection if the remote system state is unclear.
-- Never use remote destructive operations such as recursive delete, reset, or overwrite without an explicit target check and user approval.
-- Do not store passwords in the skill, repo, log files, or remote scripts. Use local environment variables.
+- **Connection init flow** — when no connection exists: if user provided full info (user + host + password), automate it; otherwise give the command and let the user run it or provide the password later.
+- **All commands run inside tmux** — no "direct run" mode exists.
+- **Session naming is the agent's responsibility** — pick meaningful names per task.
+- **Use `--json` for automation** — output includes host/session context for identification.
+- **Use `--base64` for complex commands** — pipes, quotes, `$`, heredocs, multi-line.
+- **Use `--auto-create` to simplify** — no separate `rtmux new` needed.
+- **Read before write** — inspect remote state before modifying files.
+- **Verify after write** — read back after remote file edits.
+- **Clean up when done** — kill sessions that are no longer needed.
 
-## Command Patterns
+## Troubleshooting
 
-### Setup (one-time per machine)
-
-```bash
-python scripts/setup.py
-```
-
-### Basic Commands
-
-Saved session:
-```bash
-python scripts/invoke_remote.py --session my-host --shell bash --command "hostname && uname -a"
-```
-
-Explicit host with key:
-```bash
-python scripts/invoke_remote.py --host 192.168.1.50 --user nvidia --key ~/.ssh/id_ed25519 --shell bash --command "pwd && ls -la"
-```
-
-Password via environment variable:
-```bash
-export SSHPASS="example-password"
-python scripts/invoke_remote.py --host 192.168.1.50 --user nvidia --password-env SSHPASS --shell bash --command "df -h"
-```
-
-Hostkey pinning, Windows plink, custom ports, and backend forcing: see `references/usage.md`.
-
-### Complex Remote Scripts via Base64
-
-The `--base64` flag auto-encodes the command to avoid all shell escaping issues — pipes, quotes, dollar signs, and multi-line scripts pass through cleanly.
-
-```bash
-python scripts/invoke_remote.py \
-  --host 10.0.0.1 --user admin --key ~/.ssh/id_ed25519 \
-  --base64 --command 'echo "$PATH" | tr ":" "\n" | grep -i python'
-```
-
-Multi-line scripts and heredoc patterns: see `references/usage.md`.
-
-### Remote Agent (Structured I/O)
-
-First use auto-deploys the agent to `/tmp/remote-ops-agent.py`. Subsequent calls detect the existing agent and skip deployment.
-
-```bash
-# Execute commands through the agent (auto-deploy on first use)
-python scripts/invoke_remote.py \
-  --host 10.0.0.1 --user admin --key ~/.ssh/id_ed25519 \
-  --agent --command "df -h && free -m"
-```
-
-Agent methods: `ping`, `exec`, `read`, `write`, `list`, `checksum`.
-
-For per-method examples (read/write/list/ping/checksum) and the full JSONL protocol, see `references/usage.md`.
-
-### File Sync (`--sync`)
-
-Push a local file to the remote host, checksum-based: only transfers if the remote copy differs.
-
-```bash
-python scripts/invoke_remote.py \
-  --host 10.0.0.1 --user admin --key ~/.ssh/id_ed25519 \
-  --sync ./my_script.py:/opt/app/my_script.py
-```
-
-Uses the remote agent internally — auto-deploys on first use. Output: `Already in sync` or `Synced: local -> remote (N bytes)`. See `references/usage.md`.
-
-### Server DB (Local Persistence)
-
-Save, list, and reuse server connection profiles via `~/.remote-ops/servers.json`.
-
-```bash
-# Save a server after connecting
-python scripts/invoke_remote.py \
-  --host 10.0.0.5 --user admin --key ~/.ssh/id_ed25519 \
-  --save my-vm --command "hostname"
-
-# Reuse a saved server
-python scripts/invoke_remote.py --server my-vm --command "df -h"
-
-# List all saved servers
-python scripts/invoke_remote.py --list-servers
-```
-
-Override, delete, and notes: see `references/usage.md`.
-
-### Troubleshooting
-
-Common failure modes and what they mean:
-
-```bash
-# Python not available on remote
-# ERROR: remote host does not have Python >= 3.7.
-# Action: tell the user the remote host needs Python 3.7+. Fall back to --base64 for simple commands.
-
-# Agent deployment failed (permissions / disk space)
-# ERROR: failed to deploy agent to /tmp/remote-ops-agent.py
-# Action: check remote /tmp permissions and disk space with a simple command.
-
-# Agent request failed
-# AGENT ERROR: Not a file: /some/path
-# Action: verify the remote path exists. Use --agent --command '{"method":"list",...}' to explore.
-
-# Connection failed before reaching remote
-# ssh: Could not resolve hostname ...
-# Action: state that no remote change occurred. Verify hostname, network, and SSH key.
-```
-
-See [references/usage.md](references/usage.md) for direct command examples, first-use guidance, and troubleshooting patterns.
+| Error | Cause | Fix |
+|-------|-------|-----|
+| `未找到连接: xxx` | Host alias not in config | `rtmux connections` to list, or `rtmux connect` to add |
+| `会话不存在: xxx` | Session not created | Add `--auto-create` to exec |
+| `SSH 认证失败` | Key rejected or expired | `rtmux connect user@host` to refresh |
+| `命令可能仍在执行中（超时）` | Command took too long | Increase `--timeout` |
+| `tmux 安装失败` | Remote can't install tmux | Install manually: `sudo apt install tmux` |
 
 ## Resources
 
-- `scripts/invoke_remote.py` — One-shot remote commands via plink or sshpass/ssh. Supports `--base64` for automatic shell-safe transport, `--agent` for structured remote execution with auto-deployment, `--server` for saved connection profiles, and `--save`/`--list-servers`/`--delete-server` for server DB management.
-- `scripts/remote_agent.py` — Deployable remote agent providing structured I/O (ping/exec/read/write/list) via JSONL over stdin/stdout. Auto-deployed to the remote host by `--agent`.
-- `scripts/server_db.py` — JSON-backed local server connection store.
-- `scripts/setup.py` — One-time cross-platform setup hook.
-- `references/usage.md` — Detailed command patterns, agent protocol, and troubleshooting.
-
-When the user wants this behavior explicitly, invoke the skill as `$remote-ops`.
+- `agent/cli.py` — rtmux CLI with `--json`, `--base64`, `--auto-create`
+- `agent/session.py` — tmux session management with exit code capture
+- `agent/ssh_engine.py` — SSH connection engine (paramiko, replaces sshpass/plink)
+- `agent/file_manager.py` — file copy with `::` prefix and resume support
+- `agent/tmux_installer.py` — auto-install tmux from deb packages
+- `setup_rtmux.py` — cross-platform environment setup
+- `references/usage.md` — detailed usage examples and patterns

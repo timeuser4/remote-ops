@@ -1,333 +1,257 @@
-# Remote Ops Usage
+# rtmux Usage Reference
 
-## Preconditions
-
-- Run `python scripts/setup.py` once per machine.
-- **Windows**: plink.exe from PuTTY (auto-downloaded by setup).
-- **macOS**: sshpass (installed via Homebrew by setup).
-- **Linux**: sshpass (installed via package manager by setup).
-- Preferred auth order:
-  - Key-based auth (`--key`)
-  - SSH agent / Pageant
-  - Password from environment variable (`--password-env`)
-
-## Quick Checks
-
-```powershell
-# Windows
-Get-Command plink -ErrorAction SilentlyContinue
-python scripts/invoke_remote.py --session my-host --command "hostname" --dry-run
-```
+## Installation
 
 ```bash
-# macOS / Linux
-which sshpass
-python scripts/invoke_remote.py --host 192.168.1.50 --user admin --command "hostname" --dry-run
+# Setup script (creates venv, installs paramiko + rtmux)
+python3 setup_rtmux.py
+
+# Or manual install
+pip install .
 ```
 
-## Helper Script Examples
+## Connection Setup
 
-### Plink Backend (Windows)
+### First-time setup
 
-Saved session:
-```powershell
-python scripts/invoke_remote.py `
-  --session my-host `
-  --shell bash `
-  --command "hostname && uname -a && pwd"
-```
-
-Explicit host and PPK key:
-```powershell
-python scripts/invoke_remote.py `
-  --host 192.168.1.50 `
-  --user nvidia `
-  --key C:\keys\board.ppk `
-  --shell bash `
-  --command "ls -la /opt && df -h"
-```
-
-Pinned host key (plink only):
-```powershell
-python scripts/invoke_remote.py `
-  --host 192.168.1.50 `
-  --user nvidia `
-  --hostkey "ssh-ed25519 255 SHA256:..." `
-  --shell bash `
-  --command "systemctl status docker"
-```
-
-Password via environment variable (plink):
-```powershell
-$env:PLINK_PASSWORD = "example-password"
-python scripts/invoke_remote.py `
-  --host 192.168.1.50 `
-  --user nvidia `
-  --password-env PLINK_PASSWORD `
-  --shell bash `
-  --command "whoami && id"
-Remove-Item Env:PLINK_PASSWORD
-```
-
-### sshpass Backend (macOS / Linux)
-
-Explicit host with SSH key:
 ```bash
-python scripts/invoke_remote.py \
-  --host 192.168.1.50 \
-  --user nvidia \
-  --key ~/.ssh/id_ed25519 \
-  --shell bash \
-  --command "ls -la /opt && df -h"
+rtmux connect user@hostname --port 6000
+# Interactive password prompt, then:
+# - Generates SSH key (~/.remote-ops/keys/{key_name})
+# - Uploads public key to remote
+# - Saves connection config (~/.remote-ops/connections.json)
+# - Auto-installs tmux on remote if missing
 ```
 
-Saved session (SSH config Host entry):
-```bash
-python scripts/invoke_remote.py \
-  --session my-server \
-  --shell bash \
-  --command "hostname && uptime"
-```
+### Non-interactive setup
 
-Password via environment variable (sshpass):
 ```bash
-export SSHPASS="example-password"
-python scripts/invoke_remote.py \
-  --host 192.168.1.50 \
-  --user nvidia \
-  --password-env SSHPASS \
-  --shell bash \
-  --command "whoami && id"
+export SSHPASS="your-password"
+rtmux connect user@hostname --password-env SSHPASS
 unset SSHPASS
 ```
 
-Custom port:
-```bash
-python scripts/invoke_remote.py \
-  --host 192.168.1.50 \
-  --port 2222 \
-  --user admin \
-  --key ~/.ssh/mykey \
-  --shell bash \
-  --command "pwd"
-```
+### Jump host setup
 
-### Both Backends
-
-Remote command with `sudo -n`:
-```bash
-python scripts/invoke_remote.py \
-  --session my-host \
-  --shell bash \
-  --sudo \
-  --command "systemctl restart my-service && systemctl status --no-pager my-service"
-```
-
-Dry run (print command, do not execute):
-```bash
-python scripts/invoke_remote.py \
-  --host 192.168.1.50 --user admin --command "hostname" \
-  --dry-run
-```
-
-Force specific backend:
-```bash
-# Force plink even on macOS/Linux (if plink is available via Wine or similar)
-python scripts/invoke_remote.py --backend plink --session my-host --command "hostname"
-
-# Force sshpass even on Windows (if sshpass is available via WSL/Cygwin)
-python scripts/invoke_remote.py --backend sshpass --host 10.0.0.1 --user admin --command "hostname"
-```
-
-## Auto Base64 (`--base64`)
-
-The `--base64` flag automatically encodes the `--command` value as base64 and pipes it through the remote decoder. This eliminates all shell escaping problems — pipes, redirects, quotes, dollar signs, and heredocs pass through cleanly.
+When the target host is only accessible through a bastion/jump host:
 
 ```bash
-# Simple pipe-through-base64
-python scripts/invoke_remote.py \
-  --host 192.168.1.50 --user nvidia --key ~/.ssh/id_ed25519 \
-  --base64 --command 'echo "$PATH" | tr ":" "\n" | grep -i python'
+# Step 1: Set up the jump host (no tmux installed)
+rtmux connect user@bastion
 
-# Multi-line script with heredoc, no manual encoding needed
-python scripts/invoke_remote.py \
-  --host 192.168.1.50 --user nvidia --key ~/.ssh/id_ed25519 \
-  --base64 --command '
-set -euo pipefail
-hostname && date
-python3 - <<'\''PY'\''
-from pathlib import Path
-Path("/tmp/remote_test.txt").write_text("hello from remote-ops\n")
-PY
-cat /tmp/remote_test.txt'
+# Step 2: Set up the target via the jump host
+rtmux connect user@target --via bastion
 
-# Complex command with pipes and nested quotes
-python scripts/invoke_remote.py \
-  --host 192.168.1.50 --user nvidia --key ~/.ssh/id_ed25519 \
-  --base64 --command "find /var/log -name '*.log' -mtime -7 | xargs wc -l | sort -rn | head -20"
+# Multi-layer jump (target -> bastion2 -> bastion1 -> local)
+rtmux connect user@bastion1
+rtmux connect user@bastion2 --via bastion1
+rtmux connect user@target --via bastion1,bastion2
 ```
 
-## Remote Agent (`--agent`)
+**Note**: Jump hosts only need SSH key setup (no tmux). Tmux is only installed on the target host.
 
-The remote agent provides structured I/O on the remote host. It is auto-deployed to `/tmp/remote-ops-agent.py` on first use. The agent is a one-shot Python script that reads a JSON request from stdin, executes the operation, and writes a JSON response to stdout.
+### List / remove connections
 
-### Protocol
+```bash
+rtmux --json connections
+rtmux disconnect <alias>
+rtmux disconnect <alias> --remove-key
+```
 
-**Request** (one JSON line to stdin):
+## Command Execution
+
+### Basic
+
+```bash
+rtmux --json exec my-session "hostname && uname -a" --host server1
+```
+
+### Auto-create session
+
+```bash
+rtmux --json exec my-session "pwd" --host server1 --auto-create
+```
+
+### Custom timeout
+
+```bash
+rtmux --json exec my-session "slow-task" --host server1 --timeout 120
+```
+
+### Exit code propagation
+
+```bash
+rtmux --json exec my-session "test -f /etc/passwd" --host server1
+echo $?  # 0
+
+rtmux --json exec my-session "test -f /nonexistent" --host server1
+echo $?  # 1
+```
+
+### Base64 mode
+
+Use `--base64` for commands with special characters. Encoded locally, decoded on remote.
+
+```bash
+# Pipes, quotes, $variables
+rtmux --json exec s1 'echo "hello $USER" | grep hello' --host server1 --base64
+
+# Multi-line scripts
+rtmux --json exec s1 'for f in /tmp/*.log; do
+  echo "=== $f ==="
+  tail -5 "$f"
+done' --host server1 --base64
+
+# Heredoc / YAML / JSON
+rtmux --json exec s1 'cat > /tmp/config.yaml << EOF
+key: "value with spaces"
+nested:
+  list: [1, 2, 3]
+EOF' --host server1 --base64
+
+# Command substitution
+rtmux --json exec s1 'echo "Disk: $(df -h / | tail -1 | awk "{print \$5}")"' --host server1 --base64
+```
+
+## File Copy (cp)
+
+类似 scp，用 `::` 前缀标识远程路径（双冒号避免 Windows 盘符冲突）：
+
+```bash
+# Upload
+rtmux --json cp ./config.yaml ::/opt/app/config.yaml --host server1
+rtmux --json cp ./dist ::/opt/app/dist -r --host server1
+
+# Download
+rtmux --json cp ::/var/log/syslog ./logs/ --host server1
+
+# Resume (断点续传)
+rtmux --json cp ./big-file.tar.gz ::/remote/path --host server1 --resume
+rtmux --json cp ::/remote/big-file.tar.gz ./local/path --host server1 --resume
+```
+
+## Other File Operations
+
+```bash
+# List
+rtmux --json ls /opt/app --host server1
+rtmux --json ls /opt/app -l --host server1  # long format
+
+# Delete
+rtmux --json rm /tmp/old-file.txt --host server1
+rtmux --json rm /tmp/old-dir --host server1  # JSON mode auto-skips confirmation
+
+# Proxy download
+rtmux --json proxy-dl https://example.com/data.tar.gz /tmp/data.tar.gz --host server1
+```
+
+## Session Management
+
+```bash
+# List sessions
+rtmux --json list --host server1
+
+# Kill session
+rtmux --json kill my-session --host server1
+
+# Capture terminal history
+rtmux --json capture my-session --host server1
+rtmux --json capture my-session --host server1 --lines 200
+
+# Create session explicitly
+rtmux --json new my-session --host server1
+```
+
+## JSON Output
+
+### With connection context
+
+All `--json` outputs with `--host` include connection info:
+
 ```json
-{"method": "<name>", "id": "<request-id>", "params": { ... }}
+{
+  "host": "server1",
+  "hostname": "10.0.0.1",
+  "username": "admin",
+  "session": "my-session",
+  "status": "success",
+  "output": "command output",
+  "exit_code": 0
+}
 ```
 
-**Response** (one JSON line to stdout):
+### Success responses
+
 ```json
-{"ok": true, "data": { ... }, "id": "<request-id>"}
-{"ok": false, "error": "description", "id": "<request-id>"}
+// exec
+{"host":"...","hostname":"...","username":"...","session":"...","status":"success","output":"...","exit_code":0}
+
+// list
+{"host":"...","status":"ok","sessions":[{"name":"...","windows":1,"created":"..."}]}
+
+// kill
+{"host":"...","session":"...","status":"killed","name":"...","message":"会话已关闭: ..."}
+
+// ls
+{"host":"...","status":"ok","path":"/remote","files":[{"name":"...","is_dir":false,"size":1024,"modified":"..."}]}
+
+// upload/download
+{"host":"...","status":"ok","files":3,"size":10240,"message":"已上传 3 个文件，共 10.0 KB"}
+
+// capture
+{"host":"...","session":"...","status":"ok","output":"terminal output..."}
 ```
 
-### Methods
+### Error response
 
-**ping** — Health check, returns host info.
-```bash
-python scripts/invoke_remote.py --host 10.0.0.1 --user admin --key ~/.ssh/id_ed25519 \
-  --agent --command '{"method":"ping"}'
-```
-Response: `{"ok": true, "data": {"hostname": "...", "python": "...", "platform": "...", "cwd": "...", "uid": ...}}`
-
-**exec** — Execute a shell command.
-```bash
-python scripts/invoke_remote.py --host 10.0.0.1 --user admin --key ~/.ssh/id_ed25519 \
-  --agent --command "df -h && free -m"
-```
-Parameters: `command` (required), `shell` (bash/sh), `cwd`, `timeout` (seconds, default 60), `env` (dict).
-
-Response: `{"ok": true, "data": {"ok": true, "stdout": "...", "stderr": "...", "returncode": 0}}`
-
-**read** — Read a file, content returned as base64.
-```bash
-python scripts/invoke_remote.py --host 10.0.0.1 --user admin --key ~/.ssh/id_ed25519 \
-  --agent --command '{"method":"read","params":{"path":"/etc/hostname"}}'
-```
-Response: `{"ok": true, "data": {"ok": true, "data": "<base64>", "size": 42}}`
-
-**write** — Write a file from base64-encoded data.
-```bash
-python scripts/invoke_remote.py --host 10.0.0.1 --user admin --key ~/.ssh/id_ed25519 \
-  --agent --command '{"method":"write","params":{"path":"/tmp/test.txt","data":"SGVsbG8gV29ybGQK","mode":"644"}}'
-```
-Parameters: `path` (required), `data` (base64, required), `mode` (octal string, default "644").
-
-**list** — List directory contents.
-```bash
-python scripts/invoke_remote.py --host 10.0.0.1 --user admin --key ~/.ssh/id_ed25519 \
-  --agent --command '{"method":"list","params":{"path":"/var/log"}}'
-```
-Parameters: `path` (required), `pattern` (glob, default "*").
-Response: `{"ok": true, "data": {"ok": true, "entries": [{"name": "...", "path": "...", "type": "file|dir", "size": N, "mtime": T}, ...]}}`
-
-### Deployment
-
-On first `--agent` invocation per remote host:
-1. Checks for Python >= 3.7 on the remote
-2. Reads the local `scripts/remote_agent.py`
-3. Base64-encodes and writes it to the remote path (default `/tmp/remote-ops-agent.py`)
-4. Sets the executable bit
-
-Subsequent calls detect the existing agent and skip deployment. Deployment adds ~1-2 seconds to the first call.
-
-**checksum** — Get SHA256 hash of a remote file (used internally by `--sync`).
-```bash
-python scripts/invoke_remote.py --host 10.0.0.1 --user admin --key ~/.ssh/id_ed25519 \
-  --agent --command '{"method":"checksum","params":{"path":"/etc/hostname"}}'
-```
-Parameters: `path` (required).
-Response (file exists): `{"ok": true, "data": {"ok": true, "sha256": "abc123...", "size": 42}}`
-Response (file not found): `{"ok": true, "data": {"ok": true, "sha256": null, "size": 0}}`
-
-## File Sync (`--sync`)
-
-Push a local file to remote, checksum-based: only transfers if the remote copy differs or doesn't exist.
-
-```bash
-# Push local file to remote
-python scripts/invoke_remote.py \
-  --host 10.0.0.1 --user admin --key ~/.ssh/id_ed25519 \
-  --sync ./config.yaml:/etc/app/config.yaml
-
-# With saved server profile
-python scripts/invoke_remote.py \
-  --server my-vm --sync ./deploy.sh:/opt/bin/deploy.sh
-
-# Dry-run to preview
-python scripts/invoke_remote.py \
-  --server my-vm --sync ./script.py:/opt/script.py --dry-run
+```json
+{"status":"error","error":"会话不存在: xxx","code":5}
 ```
 
-Flow: local SHA256 → remote `checksum` → compare → if different, `write` → verify.
+### Error codes
 
-## Server DB
+| Code | Type | Meaning |
+|------|------|---------|
+| 1 | Generic | Unspecified error |
+| 2 | ConfigError | Connection not found, config corrupted |
+| 3 | ConnectionError | Network failure, host unreachable |
+| 4 | AuthError | SSH authentication failed |
+| 5 | TmuxError | Session not found, tmux install failed |
+| 6 | KeyGenerationError | ssh-keygen failed |
 
-Save, list, and reuse server connection profiles stored in `~/.remote-ops/servers.json`.
+## Agent Integration
 
-```bash
-# Save a server for later reuse
-python scripts/invoke_remote.py \
-  --host 192.168.1.50 --user nvidia --key ~/.ssh/id_ed25519 \
-  --save my-nvidia-box --command "hostname"
+```python
+import subprocess, json
 
-# List saved servers
-python scripts/invoke_remote.py --list-servers
+def rtmux(session, command, host, base64=False, timeout=30):
+    """Execute a command in a remote tmux session."""
+    cmd = ["rtmux", "--json", "exec", session, command,
+           "--host", host, "--timeout", str(timeout), "--auto-create"]
+    if base64:
+        cmd.append("--base64")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    data = json.loads(result.stdout)
+    if data.get("status") == "error":
+        raise RuntimeError(f"rtmux error: {data['error']} (code {data.get('code')})")
+    return data
 
-# Use a saved server
-python scripts/invoke_remote.py --server my-nvidia-box --command "df -h"
+def rtmux_cp(src, dst, host, recursive=False, resume=False):
+    """Copy file to/from remote (like scp). Use :: prefix for remote paths."""
+    cmd = ["rtmux", "--json", "cp", src, dst, "--host", host]
+    if recursive:
+        cmd.append("-r")
+    if resume:
+        cmd.append("--resume")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return json.loads(result.stdout)
 
-# Override saved values
-python scripts/invoke_remote.py --server my-nvidia-box --user root --command "whoami"
+# Usage
+r = rtmux("agent-my-task", "df -h", "server1")
+print(r["output"])
+print(f"Host: {r['hostname']}, Exit: {r['exit_code']}")
 
-# Delete a saved server
-python scripts/invoke_remote.py --delete-server my-nvidia-box
+# File copy (:: prefix for remote paths)
+rtmux_cp("./local.txt", "::/remote/path", "server1")  # upload
+rtmux_cp("::/remote/file.txt", "./local", "server1")   # download
 ```
-
-## Direct Command Patterns (Without Helper Script)
-
-### Plink (Windows)
-
-Saved session:
-```powershell
-plink -batch -load my-host "bash -lc 'hostname && uname -a'"
-```
-
-Explicit host and key:
-```powershell
-plink -batch -ssh -i C:\keys\board.ppk nvidia@192.168.1.50 "bash -lc 'pwd && ls -la'"
-```
-
-Pinned host key:
-```powershell
-plink -batch -ssh -hostkey "ssh-ed25519 255 SHA256:..." nvidia@192.168.1.50 "bash -lc 'journalctl -n 50 --no-pager'"
-```
-
-### sshpass (macOS / Linux)
-
-Password auth:
-```bash
-sshpass -e ssh -o StrictHostKeyChecking=accept-new nvidia@192.168.1.50 "bash -lc 'hostname'"
-```
-
-Key auth:
-```bash
-ssh -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 nvidia@192.168.1.50 "bash -lc 'hostname'"
-```
-
-## Notes
-
-- The backend is auto-detected from OS but can be forced with `--backend`.
-- `--hostkey` is only supported by the plink backend.
-- Avoid bare `plink host` or `ssh host` interactive sessions when using the shell tool.
-- Use `bash -lc` when the remote target is Linux and the command needs shell features.
-- Use `--shell raw` only when the remote side should receive the command exactly as written.
-- If `sudo -n` fails, the remote host likely requires a password prompt. Stop and ask the user.
-- **Use `--base64` for any command with special characters** — pipes, redirects, quotes, dollar signs, JSON, heredocs. This eliminates quoting issues across all shell layers.
-- **Use `--agent` for structured remote work** — file reads/writes, directory listings, complex scripts. The agent handles encoding/decoding internally.
-- `--base64` and `--agent` are mutually exclusive.
-- For remote writes, back up target files first and verify with a separate read-only command.
-- Server profiles are stored in `~/.remote-ops/servers.json` and managed via `--save`, `--list-servers`, `--delete-server`, and `--server`.
