@@ -9,7 +9,7 @@ Non-interactive remote command execution: inspection, deployment, log collection
 ## Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/timeuser4/remote-ops/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/timeuser4/remote-ops/v0.1/install.sh | bash
 ```
 
 The installer auto-detects which harnesses you have (`~/.claude`, `~/.codex`, `~/.opencode`) and installs to all of them.

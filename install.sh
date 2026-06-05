@@ -3,7 +3,7 @@ set -euo pipefail
 
 # remote-ops one-line installer
 # Detects installed TUI harnesses and installs the skill to all of them.
-# Usage: curl -sSL https://raw.githubusercontent.com/timeuser4/remote-ops/main/install.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/timeuser4/remote-ops/v0.1/install.sh | bash
 
 REPO_URL="https://github.com/timeuser4/remote-ops.git"
 TMP_DIR=$(mktemp -d)

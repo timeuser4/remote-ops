@@ -9,7 +9,7 @@
 ## 安装
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/timeuser4/remote-ops/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/timeuser4/remote-ops/v0.1/install.sh | bash
 ```
 
 安装脚本会自动检测你已安装的 harness（`~/.claude`、`~/.codex`、`~/.opencode`），并一次性安装到所有检测到的 harness 中。
