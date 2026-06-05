@@ -104,57 +104,16 @@ def install_plink_windows() -> bool:
         return False
 
 
-SSHPASS_VERSION = "1.10"
-SSHPASS_URL = f"https://sourceforge.net/projects/sshpass/files/sshpass/{SSHPASS_VERSION}/sshpass-{SSHPASS_VERSION}.tar.gz"
-
-
 def install_sshpass_macos() -> bool:
-    import shutil
-
-    if shutil.which("sshpass"):
+    if subprocess.run(["which", "sshpass"], capture_output=True).returncode == 0:
         print("sshpass already installed.")
         return True
-
-    # Try Homebrew first
-    if shutil.which("brew"):
-        print("Installing sshpass via Homebrew...")
-        subprocess.run(["brew", "install", "hudochenkov/sshpass/sshpass"], check=True)
-        return True
-
-    # Fallback: compile from source
-    print("Homebrew not found, compiling sshpass from source...")
-    if not shutil.which("cc") and not shutil.which("gcc") and not shutil.which("clang"):
-        print("No C compiler found. Install Xcode Command Line Tools:")
-        print("  xcode-select --install")
+    if subprocess.run(["which", "brew"], capture_output=True).returncode != 0:
+        print("Homebrew not found. Install it first: https://brew.sh")
         return False
-
-    tmp_dir = tempfile.mkdtemp()
-    try:
-        tarball = os.path.join(tmp_dir, "sshpass.tar.gz")
-        print(f"Downloading sshpass {SSHPASS_VERSION}...")
-        urllib.request.urlretrieve(SSHPASS_URL, tarball)
-
-        subprocess.run(["tar", "xzf", tarball, "-C", tmp_dir], check=True)
-        src_dir = os.path.join(tmp_dir, f"sshpass-{SSHPASS_VERSION}")
-
-        print("Compiling...")
-        subprocess.run(["./configure"], cwd=src_dir, check=True, capture_output=True)
-        subprocess.run(["make"], cwd=src_dir, check=True, capture_output=True)
-
-        # Install to /usr/local/bin
-        dest = "/usr/local/bin/sshpass"
-        print(f"Installing to {dest}...")
-        shutil.copy2(os.path.join(src_dir, "sshpass"), dest)
-        os.chmod(dest, 0o755)
-
-        print("sshpass installed successfully.")
-        return True
-    except Exception as e:
-        print(f"Failed to compile sshpass: {e}")
-        print("Please install manually: brew install hudochenkov/sshpass/sshpass")
-        return False
-    finally:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+    print("Installing sshpass via Homebrew...")
+    subprocess.run(["brew", "install", "hudochenkov/sshpass/sshpass"], check=True)
+    return True
 
 
 def detect_linux_pkg_manager() -> str | None:
