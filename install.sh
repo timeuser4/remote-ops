@@ -27,7 +27,7 @@ if [ ${#HARNESS_DIRS[@]} -eq 0 ]; then
 fi
 
 echo "==> Cloning remote-ops..."
-git clone --depth 1 "$REPO_URL" "$TMP_DIR"
+git clone --depth 1 --branch v0.1 "$REPO_URL" "$TMP_DIR"
 
 for dir in "${HARNESS_DIRS[@]}"; do
     echo "==> Installing to $dir"
